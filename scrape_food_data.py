@@ -1,69 +1,96 @@
 import time
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+import openpyxl
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.action_chains import ActionChains
 
-# File paths
-input_excel_path = '/Users/sandip/Automation/recipes_names.xlsx'
-output_excel_path = '/Users/sandip/Automation/scraped_data_output.xlsx'
+# Set up Chrome options for debugging
+chrome_options = Options()
+chrome_options.add_argument("--start-maximized")  # Start with full window
+chrome_options.add_argument("--disable-infobars")  # Remove automation banners
+chrome_options.add_argument("--disable-extensions")
+chrome_options.headless = False  # Disable headless for debugging
 
-# Load search data from Excel
-search_data = pd.read_excel(input_excel_path)
+# Explicit ChromeDriver setup
+service = Service(ChromeDriverManager().install())
+driver = webdriver.Chrome(service=service, options=chrome_options)
 
-# List to store scraped data
-data_list = []
-
-# Iterate through each recipe name in the Excel file
-for recipe_name in search_data['recipe_name']:  # Replace with the actual column name
+# Function to scrape recipe details
+def scrape_recipe(url):
+    driver.get(url)
+    time.sleep(2)  # Wait for the page to load completely
     try:
-        # Open the search page by searching for the keyword
-        search_url = f"https://www.bonhappetee.com/food-search/search-page?q={recipe_name}"
-        
-        # Make the request to the search page
-        response = requests.get(search_url)
-        
-        # Parse the HTML content using BeautifulSoup
-        soup = BeautifulSoup(response.text, 'html.parser')
+        recipe_title = driver.find_element(By.CSS_SELECTOR, "h1").text
+        ingredients = driver.find_elements(By.CSS_SELECTOR, ".mntl-structured-ingredients__list-item")
+        ingredients_list = [ingredient.text for ingredient in ingredients]
+        print(f"Scraped recipe: {recipe_title}")
+        return recipe_title, ingredients_list
+    except Exception as e:
+        print(f"Error scraping recipe {url}: {e}")
+        return None, None
 
-        # Find all results on the page (not just the first result)
-        results = soup.find_all('a', class_='sr-result-bar')
-        
-        if not results:
-            print(f"No results found for {recipe_name}")
-            continue
+# Function to save data to Excel
+def save_to_excel(filename, recipe_title, ingredients):
+    try:
+        # Open or create the workbook
+        try:
+            workbook = openpyxl.load_workbook(filename)
+            sheet = workbook.active
+        except FileNotFoundError:
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.append(["Recipe Title", "Ingredients"])  # Add headers
 
-        # Loop through all search results
-        for result in results:
-            # Extract the link to the result page
-            result_page_url = "https://www.bonhappetee.com" + result.get('href')
+        # Append data to the sheet
+        sheet.append([recipe_title, ", ".join(ingredients)])
+        workbook.save(filename)
+        print(f"Saved: {recipe_title}")
+    except Exception as e:
+        print(f"Error saving to Excel: {e}")
 
-            # Now request the details page for the result
-            result_page_response = requests.get(result_page_url)
-            result_soup = BeautifulSoup(result_page_response.text, 'html.parser')
+# Function to scrape all recipes in a category
+def scrape_category(category_url, filename):
+    driver.get(category_url)
+    print(f"Navigating to: {category_url}")
+    time.sleep(3)  # Wait for the page to load
 
-            # Scrape the required data from the result page
-            try:
-                food_name = result_soup.find(class_="food-name").text.strip()
-                description = result_soup.find(class_="description").text.strip()
-                cuisine_text = result_soup.find(class_="cuisine-text").text.strip()
-                serving_size = result_soup.find(class_="serving-size-weight-text").text.strip()
+    try:
+        # Locate all sections dynamically
+        recipe_sections = driver.find_elements(By.CSS_SELECTOR, "[id^='mntl-taxonomysc-article-list-group']")
 
-                # Append the scraped data to the list
-                data_list.append({
-                    "Search Term": recipe_name,
-                    "Food Name": food_name,
-                    "Description": description,
-                    "Cuisine": cuisine_text,
-                    "Serving Size": serving_size
-                })
-            except AttributeError as e:
-                print(f"Error scraping data for {recipe_name} from result: {e}")
+        for section in recipe_sections:
+            cards = section.find_elements(By.CSS_SELECTOR, ".mntl-card-list-items")
+
+            for card in cards:
+                try:
+                    ActionChains(driver).move_to_element(card).click().perform()
+                    time.sleep(2)
+
+                    # Scrape the recipe details
+                    recipe_title, ingredients = scrape_recipe(driver.current_url)
+
+                    if recipe_title and ingredients:
+                        save_to_excel(filename, recipe_title, ingredients)
+
+                    # Return to the previous page
+                    driver.back()
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"Error scraping card: {e}")
+                    continue
 
     except Exception as e:
-        print(f"Error processing {recipe_name}: {e}")
+        print(f"Error scraping category: {e}")
 
-# Save the scraped data to an Excel file
-df = pd.DataFrame(data_list)
-df.to_excel(output_excel_path, index=False)
+# Main function
+def main():
+    category_url = "https://www.allrecipes.com/recipes/15935/world-cuisine/asian/indian/drinks/"
+    filename = "scraped_indian_drinks_recipes.xlsx"
+    scrape_category(category_url, filename)
+    driver.quit()
 
-print(f"Scraping complete. Data saved to {output_excel_path}")
+if __name__ == "__main__":
+    main()
